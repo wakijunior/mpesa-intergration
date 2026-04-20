@@ -56,9 +56,12 @@ class Payment(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sale_id: Mapped[int] = mapped_column(ForeignKey("sales.id"), nullable=False)
-    trans_id: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
-    trans_amount: Mapped[float] = mapped_column(Float, nullable=False)
-    phone_paid: Mapped[str] = mapped_column(String(20), nullable=False)
+    transaction_code: Mapped[str] = mapped_column(String(50), nullable=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=True)
+    phone_paid: Mapped[str] = mapped_column(String(20), nullable=True)
+    merchant_request_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    checkout_request_id: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     sale: Mapped["Sale"] = relationship(back_populates="payments")

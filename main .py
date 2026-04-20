@@ -9,20 +9,20 @@ from sqlalchemy.orm import sessionmaker
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from flask_cors import CORS
 from mpesa import make_stk_push
+from datetime import timedelta
 
 load_dotenv()
 
 
 app = Flask(__name__)
-CORS(app, origins="http://localhost:5000")  # Enable CORS for all routes
+CORS(app, resources={r"/*": {"origins": "http://127.0.0.1:5500"}})  # Enable CORS for all routes
 
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
 
-app = Flask(__name__)
-
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=1)
 
 # ✅ ADD THEM HERE
 @jwt.unauthorized_loader
@@ -47,6 +47,10 @@ def needs_fresh_token_callback(jwt_header, jwt_payload):
 
 
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("db_url")
+
+if not app.config["SQLALCHEMY_DATABASE_URI"]:
+    raise ValueError("Database URL not set")
+
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("jwt_secret_key")
 
@@ -63,11 +67,31 @@ Base.metadata.create_all(engine)
 def home():
     return "Welcome to the Flask API!"
 
+@app.route("/users", methods=["GET"])
+def users():
+    with get_db() as db:
+        if request.method == "POST":
+            return jsonify({"error": "Method not allowed"}), 405
+        elif request.method == "GET":
+            # Handle GET request for retrieving users
+            users = db.query(User).all()
+            return jsonify({
+    "data": [
+        {
+            "id": user.id,
+            "full_name": user.full_name,
+            "email": user.email,
+            "created_at": user.created_at.isoformat()
+        }
+        for user in users
+    ]
+})
+
 @app.route("/register", methods=["POST"])
 def register():
     with get_db() as db:
-        # if request.method != "POST":
-        #     return jsonify({"error": "Method not allowed"}), 405
+        if request.method != "POST":
+             return jsonify({"error": "Method not allowed"}), 405
     
         data = request.get_json()
 
@@ -125,6 +149,7 @@ def login():
                 access_token = create_access_token(identity=user.email)
 
                 return jsonify({"message": "Login Successful", "access_token": access_token}), 200
+            return jsonify({"error": "Invalid email or password"}), 401
 
 @app.route("/products", methods=["GET", "POST"])
 @jwt_required()
@@ -133,7 +158,7 @@ def products():
         if request.method != "POST":
             return jsonify({"error": "Method not allowed"}), 405
         
-        if request.method == "POST":
+        elif request.method == "POST":
             data = request.get_json()
 
             if not data:
@@ -182,69 +207,141 @@ def products():
             return jsonify(products_list), 200
         
 @app.route("/sales", methods=["GET", "POST"])
+@jwt_required()
 def sales():
-    db = get_db()
-    if request.method == "POST":
-        # Process sales creation logic here
-        data = request.get_json()
+    with get_db() as db:
+        if request.method == "POST":
+            # Process sales creation logic here
+            data = request.get_json()
 
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
-        
-        product_id = data.get("product_id")
+            if not data:
+                return jsonify({"error": "No data provided"}), 400
+            
+            product_id = data.get("product_id")
 
-        if not product_id:
-            return jsonify({"error": "Product ID is required"}), 400
+            if not product_id:
+                return jsonify({"error": "Product ID is required"}), 400
 
-        existing_product = db.query(Product).filter_by(id=product_id).first()
+            existing_product = db.query(Product).filter_by(id=product_id).first()
 
-        if not existing_product:
-            return jsonify({"error": "Product not found"}), 404
+            if not existing_product:
+                return jsonify({"error": "Product not found"}), 404
 
-        new_sale = Sale(product_id=product_id)
-        try:
-            db.add(new_sale)
-            db.commit()
-            db.refresh(new_sale)
-            db.close()
-        except Exception as e:
-            db.rollback()
-            return jsonify({"error": "Error occurred while creating sale"}), 500
+            new_sale = Sale(product_id=product_id)
+            try:
+                db.add(new_sale)
+                db.commit()
+                db.refresh(new_sale)
+                db.close()
+            except Exception as e:
+                db.rollback()
+                return jsonify({"error": "Error occurred while creating sale"}), 500
 
-        return jsonify({"message": "Sale created successfully"}), 201
-    else:
-            # Process sales retrieval logic here
-            sales = db.query(Sale).all()
+            return jsonify({"message": "Sale created successfully"}), 201
+        else:
+                # Process sales retrieval logic here
+                sales = db.query(Sale).all()
 
-            sales_list = [
-                {
-                    "id": sale.id,
-                    "product_id": sale.product_id,
-                    "created_at": sale.created_at
-                }
-                for sale in sales
-            ]
-            return jsonify(sales_list), 200
+                sales_list = [
+                    {
+                        "id": sale.id,
+                        "product_id": sale.product_id,
+                        "created_at": sale.created_at
+                    }
+                    for sale in sales
+                ]
+                return jsonify(sales_list), 200
 
 @app.route('/stk-push', methods=['POST'])
 def stk_push():
     data = request.get_json()
     
     stk_response = make_stk_push(data)
-    
-    #create a payment with id, sale_id, mrid, crid, created_at
-    print(stk_response)
-    return jsonify(stk_response)
+    print("STK Push Response:", stk_response)
 
+#create a payment with id, sale_id, mrid, crid, created_at
+    try:
+        with get_db() as db:
+            new_payment = Payment(
+                sale_id=data.get("sale_id"),
+                merchant_request_id=stk_response.get("MerchantRequestID"),
+                checkout_request_id=stk_response.get("CheckoutRequestID"),
+                status="Pending"
+            )
+
+            db.add(new_payment)
+            db.commit()
+
+    except Exception as e:
+        print("Error saving payment:", str(e))
+
+    return jsonify(stk_response)
 
 @app.route('/stk-call-back', methods=['POST'])
 def call_back():
     data = request.get_json()
-    print("STK Callback Data:--------", data)
-    
-    #fetch the payment record using mrid and crid
-    #update payment record with transaction code, status and trans_amount.
-    return jsonify({"message": "Callback received"}), 200
+
+    try:
+        stk_callback = data["Body"]["stkCallback"]
+
+        merchant_request_id = stk_callback.get("MerchantRequestID")
+        checkout_request_id = stk_callback.get("CheckoutRequestID")
+        result_code = stk_callback.get("ResultCode")
+
+        with get_db() as db:
+            #fetch the payment record using mrid and crid
+            payment = db.query(Payment).filter_by(
+                merchant_request_id=merchant_request_id,
+                checkout_request_id=checkout_request_id).first()
+            
+            if not payment:
+                return jsonify({"error": "Payment not found"}), 404
+            
+            # update based on success or failure
+            if result_code == 0:
+                callback_items = stk_callback["CallbackMetadata"]["Item"]
+
+                metadata = {item["Name"]: item.get("Value") for item in callback_items}
+                print("Payment Metadata:", metadata)
+
+                payment.transaction_code = metadata.get("MpesaReceiptNumber")
+                payment.amount = metadata.get("Amount")
+                payment.phone_paid = metadata.get("PhoneNumber")
+                payment.status = "Success"
+
+            else:
+                payment.status = "Failed"
+
+            db.commit()
+        return jsonify({"message": "Callback processed successifully"}), 200
+    except Exception as e:
+        print("Callback error:", str(e))
+        return jsonify({"error": "Failed to process callback"}), 500
+    # return jsonify({"message": "Callback received"}), 200
+
+@app.route("/mpesa-payments", methods=["GET"])
+@jwt_required()
+def get_mpesa_payments():
+    with get_db() as db:
+        payments = db.query(Payment).all()
+
+        payments_list = [
+            {
+                "id": payment.id,
+                "sale_id": payment.sale_id,
+                "merchant_request_id": payment.merchant_request_id,
+                "checkout_request_id": payment.checkout_request_id,
+                "transaction_code": payment.transaction_code,
+                "amount": payment.amount,
+                "status": payment.status,
+                "created_at": payment.created_at
+            }
+            for payment in payments
+        ]
+
+        return jsonify(payments_list), 200
+
+
 
 #add a route for mpesa-payments its a get request it should fetch payments from payments table in db
 #
