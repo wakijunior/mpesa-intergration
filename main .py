@@ -1,4 +1,6 @@
-from flask import Flask, jsonify, request
+from fileinput import filename
+from flask import Flask, jsonify, request, send_from_directory
+# from auth import admin_required
 from models import User, Base, Product, Sale, Payment
 from sqlalchemy import create_engine
 from flask_bcrypt import Bcrypt
@@ -6,19 +8,25 @@ from dotenv import load_dotenv
 import os
 import psycopg2
 from sqlalchemy.orm import sessionmaker
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, verify_jwt_in_request
 from flask_cors import CORS
 from mpesa import make_stk_push
 from datetime import timedelta
+from werkzeug.utils import secure_filename
+from generatePf import generate_pdf
 
 load_dotenv()
 
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "http://127.0.0.1:5500"}})  # Enable CORS for all routes
+from flask_cors import CORS
 
-bcrypt = Bcrypt(app)
-jwt = JWTManager(app)
+CORS(
+    app,
+    origins=["http://127.0.0.1:5500"],
+    supports_credentials=True,
+    allow_headers=["Content-Type", "Authorization"],
+)# Enable CORS for all routes
 
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
@@ -66,6 +74,35 @@ Base.metadata.create_all(engine)
 @app.route("/")
 def home():
     return "Welcome to the Flask API!"
+
+from werkzeug.utils import secure_filename
+import os
+import uuid
+from flask import request, jsonify
+
+@app.route("/upload-image", methods=["POST"])
+def upload_image():
+
+    file = request.files.get("image")
+
+    if not file:
+        return jsonify({"error": "No file provided"}), 400
+
+    filename = secure_filename(file.filename)
+    unique_name = f"{uuid.uuid4()}_{filename}"
+
+    upload_folder = os.path.join(os.getcwd(), "uploads")
+    os.makedirs(upload_folder, exist_ok=True)
+
+    file.save(os.path.join(upload_folder, unique_name))
+
+    return jsonify({
+        "image_url": f"http://127.0.0.1:5000/uploads/{unique_name}"
+    }), 200
+    
+@app.route("/uploads/<filename>")
+def uploaded_file(filename):
+    return send_from_directory("uploads", filename)
 
 @app.route("/users", methods=["GET"])
 def users():
@@ -155,57 +192,114 @@ def login():
 @jwt_required()
 def products():
     with get_db() as db:
-        if request.method != "POST":
-            return jsonify({"error": "Method not allowed"}), 405
-        
-        elif request.method == "POST":
-            data = request.get_json()
 
-            if not data:
-                return jsonify({"error": "No data provided"}), 400
-            
+        if request.method == "GET":
+            products = db.query(Product).all()
+
+            return jsonify([
+                {
+                    "id": Product.id,
+                    "product_name": Product.product_name,
+                    "product_image": Product.product_image,
+                    "quantity": Product.quantity,
+                    "price": Product.price,
+                    "total_price": Product.total_price
+                }
+                for Product in products
+            ]), 200
+
+        elif request.method == "POST":
+            data = request.get_json(force=True)
+
+            print("data:-----------", request.get_json())
+
             product_name = data.get("product_name")
+            product_image = data.get("product_image")
+            quantity = data.get("quantity")
             price = data.get("price")
 
-            if not price or not product_name:
-                return jsonify({"error": "Product name and price are required"}), 400
+            if quantity is None or price is None:
+                return jsonify({"error": "Quantity and price are required"}), 400
             
-            # ✅ Get logged-in user from JWT
+            
+            quantity = int(quantity)
+            price = float(price)
+            
+
+            if not product_name or not quantity or not price or not product_image:
+                return jsonify({"error": "Missing required fields"}), 400
+            
+            total_price = float(quantity) * float(price)
+
             current_user_email = get_jwt_identity()
             user = db.query(User).filter_by(email=current_user_email).first()
 
-            if not user:
-                return jsonify({"error": "User not found"}), 404
-
-            # ✅ Use authenticated user's ID
             new_product = Product(
                 user_id=user.id,
+                product_name=product_name,
+                product_image=product_image,
+                quantity=quantity,
                 price=price,
-                product_name=product_name
+                total_price=total_price
             )
 
             db.add(new_product)
             db.commit()
-            db.refresh(new_product)
 
-            return jsonify({"message": "Product created successfully"}), 201
-
-        else:
-            products = db.query(Product).all()
-
-            products_list = [
-                {
-                    "id": product.id,
-                    "user_id": product.user_id,
-                    "product_name": product.product_name,
-                    "price": product.price,
-                    "created_at": product.created_at
-                }
-                for product in products
-            ]
-
-            return jsonify(products_list), 200
+            return jsonify({"message": "Product created"}), 201
         
+@app.route("/products/<int:id>", methods=["PUT"])
+@jwt_required(optional=True)
+def update_product(id):
+        
+    with get_db() as db:
+        product = db.query(Product).filter_by(id=id).first()
+
+        if not product:
+            return jsonify({"error": "Product not found"}), 404
+
+        data = request.get_json()
+
+        product_name = data.get("product_name")
+        product_image = data.get("product_image")
+        quantity = data.get("quantity")
+        price = data.get("price")
+
+        if quantity is not None:
+            product.quantity = int(quantity)
+
+        if price is not None:
+            product.price = float(price)
+
+        if product_name is not None:
+            product.product_name = product_name
+
+        if product_image is not None:
+            product.product_image = product_image
+
+        product.total_price = float(product.quantity) * float(product.price)
+
+        db.commit()
+
+        return jsonify({"message": "Product updated successfully"}), 200
+    
+@app.route("/products/<int:id>", methods=["DELETE"])
+@jwt_required()
+def delete_product(id):
+    if request.method == "OPTIONS":
+        return '', 200
+    
+    with get_db() as db:
+        product = db.query(Product).filter_by(id=id).first()
+
+        if not product:
+            return jsonify({"error": "Not found"}), 404
+
+        db.delete(product)
+        db.commit()
+
+        return jsonify({"message": "Deleted"}), 200
+    
 @app.route("/sales", methods=["GET", "POST"])
 @jwt_required()
 def sales():
@@ -232,12 +326,11 @@ def sales():
                 db.add(new_sale)
                 db.commit()
                 db.refresh(new_sale)
-                db.close()
             except Exception as e:
                 db.rollback()
                 return jsonify({"error": "Error occurred while creating sale"}), 500
 
-            return jsonify({"message": "Sale created successfully"}), 201
+            return jsonify({"message": "Sale created successfully", "sale_id": new_sale.id}), 201
         else:
                 # Process sales retrieval logic here
                 sales = db.query(Sale).all()
@@ -257,7 +350,7 @@ def stk_push():
     data = request.get_json()
     
     stk_response = make_stk_push(data)
-    print("STK Push Response:", stk_response)
+    # print("STK Push Response:", stk_response)
 
 #create a payment with id, sale_id, mrid, crid, created_at
     try:
@@ -308,9 +401,21 @@ def call_back():
                 payment.amount = metadata.get("Amount")
                 payment.phone_paid = metadata.get("PhoneNumber")
                 payment.status = "Success"
+                
+                #Now generate a pdf receipt using the metadata and save it to the reciepts folder with the name as the transaction code
+                # receipt_text = f"""Payment Receipt ..."""
+                # generate_pdf(receipt_text, f"{payment.transaction_code}.pdf")
+                receipt_text = f"""Payment Receipt
+                        Transaction Code: {payment.transaction_code}
+                        Amount: {payment.amount}
+                        Phone Number: {payment.phone_paid}
+                        Status: {payment.status}
+                        Thank you for your payment!"""
+                generate_pdf(receipt_text, f"{payment.transaction_code}.pdf")
 
             else:
                 payment.status = "Failed"
+                print("Payment Failed:", payment.status)
 
             db.commit()
         return jsonify({"message": "Callback processed successifully"}), 200
@@ -319,6 +424,7 @@ def call_back():
         return jsonify({"error": "Failed to process callback"}), 500
     # return jsonify({"message": "Callback received"}), 200
 
+#add a route for mpesa-payments its a get request it should fetch payments from payments table in db
 @app.route("/mpesa-payments", methods=["GET"])
 @jwt_required()
 def get_mpesa_payments():
@@ -340,10 +446,25 @@ def get_mpesa_payments():
         ]
 
         return jsonify(payments_list), 200
+    
+# @app.route("/admin/dashboard", methods=["GET"])
+# @admin_required
+# def admin_dashboard():
+#     with get_db() as db:
+
+#         users_count = db.query(User).count()
+#         products_count = db.query(Product).count()
+#         sales_count = db.query(Sale).count()
+
+#         return jsonify({
+#             "users": users_count,
+#             "products": products_count,
+#             "sales": sales_count
+#         }), 200
 
 
 
-#add a route for mpesa-payments its a get request it should fetch payments from payments table in db
+
 #
 
 if __name__ == "__main__":

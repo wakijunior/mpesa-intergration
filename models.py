@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import String, Integer, Float, DateTime, ForeignKey
+from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey
 
 
 class Base(DeclarativeBase):
@@ -15,6 +15,8 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
     password: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    role = Column(String, default="user")
 
     products: Mapped[list["Product"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -27,7 +29,10 @@ class Product(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     product_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    product_image: Mapped[str] = mapped_column(String(255), nullable=True)
     price: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_price: Mapped[float] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     user: Mapped["User"] = relationship(back_populates="products")
