@@ -86,9 +86,3 @@ def make_stk_push(payload):
         print("STK Push Response:--------", response_data)
 
         return response_data
-    
-# stk = make_stk_push({
-#         "amount": 1,
-#         "phone_number": "254714989269"
-#     })
-# print(stk)

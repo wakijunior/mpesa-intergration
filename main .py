@@ -1,4 +1,3 @@
-from fileinput import filename
 from flask import Flask, jsonify, request, send_from_directory
 # from auth import admin_required
 from models import User, Base, Product, Sale, Payment
@@ -6,14 +5,14 @@ from sqlalchemy import create_engine
 from flask_bcrypt import Bcrypt
 from dotenv import load_dotenv
 import os
-import psycopg2
 from sqlalchemy.orm import sessionmaker
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, verify_jwt_in_request
 from flask_cors import CORS
 from mpesa import make_stk_push
 from datetime import timedelta
 from werkzeug.utils import secure_filename
-from generatePf import generate_pdf
+from generatePdf import generate_pdf
+
 
 load_dotenv()
 
@@ -403,15 +402,13 @@ def call_back():
                 payment.status = "Success"
                 
                 #Now generate a pdf receipt using the metadata and save it to the reciepts folder with the name as the transaction code
-                # receipt_text = f"""Payment Receipt ..."""
-                # generate_pdf(receipt_text, f"{payment.transaction_code}.pdf")
                 receipt_text = f"""Payment Receipt
                         Transaction Code: {payment.transaction_code}
                         Amount: {payment.amount}
                         Phone Number: {payment.phone_paid}
                         Status: {payment.status}
                         Thank you for your payment!"""
-                generate_pdf(receipt_text, f"{payment.transaction_code}.pdf")
+                generate_pdf(receipt_text, f"{payment.transaction_code}")
 
             else:
                 payment.status = "Failed"
